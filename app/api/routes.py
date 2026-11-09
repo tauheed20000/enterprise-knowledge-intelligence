@@ -5,10 +5,14 @@ from uuid import uuid4
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.schemas.chat import ChatRequest, ChatResponse
+
 from app.services.document_service import (
     extract_pdf_text,
     extract_docx_text,
 )
+
+from app.services.chunking_service import create_document_chunks
+
 
 router = APIRouter()
 
@@ -38,7 +42,7 @@ async def upload_document(file: UploadFile = File(...)):
             detail="File size exceeds the 10 MB limit."
         )
 
-    # 3. Create unique document ID
+    # 3. Generate unique document ID
     document_id = str(uuid4())
 
     DOCUMENT_DIR.mkdir(parents=True, exist_ok=True)
@@ -49,7 +53,7 @@ async def upload_document(file: UploadFile = File(...)):
         # 4. Save uploaded document
         saved_file_path.write_bytes(file_content)
 
-        # 5. Extract document text
+        # 5. Extract text from document
         if file_extension == ".pdf":
             extracted_pages = extract_pdf_text(saved_file_path)
         else:
@@ -61,13 +65,31 @@ async def upload_document(file: UploadFile = File(...)):
                 detail="No readable text found in the document."
             )
 
-        # 6. Return document information
+        # 6. Convert extracted text into chunks
+        chunks = create_document_chunks(
+            extracted_pages=extracted_pages,
+            document_id=document_id,
+            filename=original_filename,
+            chunk_size=1000,
+            chunk_overlap=150
+        )
+
+        if not chunks:
+            raise HTTPException(
+                status_code=422,
+                detail="Unable to create document chunks."
+            )
+
+        # 7. Return document and chunk information
         return {
             "document_id": document_id,
             "filename": original_filename,
             "file_type": file_extension.lstrip("."),
-            "total_pages": len(extracted_pages) if file_extension == ".pdf" else None,
-            "extracted_pages": extracted_pages
+            "total_pages": (
+                len(extracted_pages) if file_extension == ".pdf" else None
+            ),
+            "total_chunks": len(chunks),
+            "chunks": chunks
         }
 
     except HTTPException:
@@ -85,6 +107,7 @@ async def upload_document(file: UploadFile = File(...)):
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
+
     return ChatResponse(
         answer=f"You asked: {request.question}",
         sources=[],
